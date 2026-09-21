@@ -1,7 +1,7 @@
 # Simulador de Sistemas de Comunicações Ópticas
 ## Documento de Arquitetura e Plano de Reescrita
 
-**Versão:** 0.7
+**Versão:** 0.9
 **Escopo:** reescrita e modularização do simulador atual (`6_DigitalCoherentSystem_DP_fiber_solved.ipynb` / `draft.py`) em um pacote Python testável, reprodutível e extensível para WDM, IMDD e DCS.
 **Status:** proposta. As decisões marcadas com **`[D-n]`** estão em aberto e precisam ser fechadas antes da implementação. Decisões já fechadas aparecem riscadas na [seção 13](#13-decisões-em-aberto).
 
@@ -444,95 +444,48 @@ Mesma topologia do diagrama enviado, agora com os nomes reais levantados no cód
 
 ```mermaid
 flowchart TD
-    SIM["<b>SimulationConfig</b><br/>sampling_rate · simulation_window<br/>ssfm_step (DeltaL) · root_seed<br/>shot_noise · thermal_noise"]
-    SYS["<b>SystemConfig</b><br/>center_frequency (lambda0)<br/>channel_spacing (delta_f) · n_channels"]
+    SIM["<b>SimulationConfig</b><br/>sampling_rate · simulation_window<br/>ssfm_step · root_seed<br/>shot_noise · thermal_noise"]
+    SYS["<b>SystemConfig</b><br/>center_frequency · channel_spacing<br/>n_channels"]
     SIM -.-> SYS
 
-    WDM["<b>ChannelConfig</b><br/>(WDMChannel_parameters)<br/>index · seed · kind (IMDD/DCS)"]
+    WDM["<b>ChannelConfig</b> (WDMChannel_parameters)<br/>index · seed · f0 (derivado da grade)<br/>symbol_rate · launch_power · rolloff"]
     SYS --> WDM
+    WDM --> KIND{"<b>kind</b>"}
 
-    WDM --> PGRID["<b>grade e formato</b><br/>frequency_offset (f0)<br/>symbol_rate (BaudRate)<br/>modulation (M) · pol (SP/DP)<br/>rolloff"]
-    WDM --> PFRAME["<b>quadro</b><br/>n_sync · n_payload<br/>n_zeros_init · n_zeros_final<br/>sync_guard"]
-    WDM --> PLASER["<b>laser do TX</b><br/>laser_power (P_laser_TX)<br/>linewidth (Delta_nu_TX)<br/>x_fraction · phi_pol"]
-    WDM --> PMOD["<b>modulador</b><br/>vpi · vbias · modulation_index<br/>extinction_ratio<br/>insertion_loss: splitter/upper/lower/combiner"]
-    WDM --> PPWR["<b>potência</b><br/>launch_power (P_LOP)"]
+    KIND -->|IMDD| IM["<b>IMDDChannel</b><br/>pol = SP sempre<br/>modulation: OOK | PAM4"]
+    KIND -->|DCS| DC["<b>CoherentChannel</b><br/>pol: SP | DP<br/>modulation: QPSK | 16/32/64QAM"]
 
-    PGRID -.-> TX
-    PFRAME -.-> TX
-    PLASER -.-> TX
-    PMOD -.-> TX
-    PPWR -.-> PWRCTL
+    IM --> ITX["<b>TransmitterConfig (IMDD)</b><br/>scheme: direct | external<br/>direta: laser rate-eq · chirp · bias<br/>externa: MZM (vpi · vbias · ER · IL · S21)"]
+    IM --> IRX["<b>ReceiverConfig (IMDD)</b><br/>fotodiodo: R · densidade de ruido<br/>banda eletrica = k · symbol_rate<br/>decisao por limiar"]
 
-    subgraph TX["<b>Transmitter</b> (pipeline)"]
-        direction TB
-        BITS["bit_sequence_generator<br/>n_bits = n_sym · log2(M) · n_pol"]
-        SYMB["symbol_sequence_generation<br/>mapeamento + normalização"]
-        PULSE["pulse_shaping<br/>→ sinal ELÉTRICO amostrado"]
-        E2O{"electrical_to_optical<br/>depende de kind"}
-        DIRMOD["direct_modulation<br/>equação de evolução do laser<br/>chirp_alpha · bias_current"]
-        EXTMOD["external_modulation<br/>MZM / IQ"]
-        BITS --> SYMB --> PULSE --> E2O
-        E2O -->|IMDD direta| DIRMOD
-        E2O -->|IMDD externa| EXTMOD
-        E2O -->|DCS| EXTMOD
-    end
+    DC --> DTX["<b>TransmitterConfig (DCS)</b><br/>laser: potencia · largura de linha<br/>IQ-MZM: vpi · vbias · ER · IL · S21<br/>impairments: desbalanco IQ · skew"]
+    DC --> DRX["<b>ReceiverConfig (DCS)</b><br/><b>lo_frequency_offset</b> · lo_power · lo_linewidth<br/>hibrida 90 graus · fotodiodos balanceados<br/>ADC: sps · bits<br/>DSP: CD · MIMO/MMA · FOE · BPS"]
 
-    DIRMOD --> PWRCTL["power_control<br/>considera as duas polarizações"]
-    EXTMOD --> PWRCTL
-    PWRCTL --> MUX["<b>multiplexer</b><br/>soma os N canais na grade"]
+    ITX -.-> TX
+    DTX -.-> TX
+    IRX -.-> RX
+    DRX -.-> RX
 
-    PFIBER["<b>parâmetros da fibra</b><br/>span_length · n_spans<br/>attenuation (alpha_dB) · dispersion (D)<br/>n2 · effective_area (Aeff)<br/>correlation_length · pmd_coefficient"]
-    PAMP["<b>amplificação</b><br/>gain_dB · noise_figure (NF_dB)"]
-    PLINE["<b>line_compensation</b><br/>on/off · DCF por span"]
-    SYS --> PFIBER
-    SYS --> PAMP
-    SYS --> PLINE
-
+    TX["<b>Transmitter</b> (pipeline)<br/>bits -> simbolos -> pulse shaping<br/>-> eletrico/optico -> controle de potencia"]
+    TX --> MUX["<b>multiplexer</b><br/>soma N canais na grade"]
     MUX --> LINK
-    PFIBER -.-> LINK
+
+    PFIB["<b>parametros da fibra</b><br/>span_length · n_spans<br/>attenuation · dispersion<br/>n2 · effective_area<br/>correlation_length · pmd_coefficient"]
+    PAMP["<b>amplificacao</b><br/>modo: ganho fixo | potencia alvo<br/>noise_figure"]
+    PLIN["<b>line_compensation</b><br/>on/off por span"]
+    SYS --> PFIB
+    SYS --> PAMP
+    SYS --> PLIN
+    PFIB -.-> LINK
     PAMP -.-> LINK
-    PLINE -.-> LINK
-    SIM -.-> LINK
+    PLIN -.-> LINK
 
-    subgraph LINK["<b>Link</b> (campo agregado, N canais juntos)"]
-        direction TB
-        SOLVER{"solver<br/>escalar ou vetorial"}
-        SSFM["SplitStepFourierMethod<br/>por span"]
-        AMP["amplifier"]
-        SOLVER --> SSFM --> AMP
-    end
-
-    PGRID -.->|"any(pol == DP)"| SOLVER
+    LINK["<b>Link</b> (campo agregado)<br/>solver escalar ou vetorial<br/>SSFM simetrico por span"]
+    DC -.->|"any(pol == DP)"| LINK
 
     LINK --> DEMUX["<b>demux</b><br/>optical_bandwidth · f0 do canal"]
-
-    WDM --> PRX["<b>recuperação do sinal</b><br/>frequencia_central (f0)<br/>frequencia_nominal (center_frequency)<br/>taxa_de_transmissao (symbol_rate)<br/>formato_de_mod (M) · pol<br/>seed do canal · n_sync · n_payload<br/>sps · rolloff"]
-    WDM --> PFE["<b>front-end</b><br/>lo_power · lo_linewidth<br/>lo_frequency_offset<br/>responsivity (R)<br/>electrical_bandwidth<br/>temperature · load_resistance"]
-    WDM --> PDSP["<b>DSP</b><br/>cd_length · cd_dispersion<br/>n_block · n_overlap · n_dphi<br/>n_f · polyfit_order"]
-
-    PRX -.-> RX
-    PFE -.-> RX
-    PDSP -.-> RX
-    DEMUX --> RX
-
-    subgraph RX["<b>Receptor</b> (por canal, kind decide qual)"]
-        direction TB
-        FE{"front-end<br/>depende de kind"}
-        COH["coerente: LO + híbrida 90° + 4 fotodiodos"]
-        DD["detecção direta: 1 fotodiodo"]
-        SYNC["sincronismo por correlação<br/>+ verificação de limites"]
-        CDC["compensação de dispersão"]
-        MIMO["MIMO 2x2 (só DP)"]
-        FOE["frequency offset"]
-        CPR["carrier phase recovery"]
-        DEC["decisão + demapeamento"]
-        FE -->|DCS| COH
-        FE -->|IMDD| DD
-        COH --> CDC --> SYNC --> MIMO --> FOE --> CPR --> DEC
-        DD --> DEC
-    end
-
-    DEC --> MET["BER · EVM · SNR"]
+    DEMUX --> RX["<b>Receptor</b> (por canal)<br/>front-end -> ADC -> DSP -> decisao"]
+    RX --> MET["BER · EVM · SNR"]
 ```
 
 **Sobre o vínculo `frequencia_central` / `frequencia_nominal`.** No diagrama original os dois apareciam separados sem relação explícita. São coisas distintas e ambas necessárias: `center_frequency` é a frequência absoluta do centro da banda de simulação (nível N1, uma só para o sistema inteiro), e `f0` é o deslocamento do canal em relação a ela (nível N2, um por canal). A frequência absoluta do canal é `center_frequency + f0`, e é ela que deveria alimentar a compensação de dispersão do receptor — hoje o código usa `1550e-9` fixo para todos os canais.
@@ -1088,6 +1041,7 @@ Ordenadas por impacto no resultado numérico. As colunas *Impacto* e *Prioridade
 | **C-20** | Multiplexador com normalização de potência declarada e registro da grade | Médio: hoje a potência total cresce com N sem ninguém declarar | Alta |
 | **C-21** | Filtro do fotodiodo com fase linear na banda do sinal (FIR, Bessel ou `filtfilt`), e `gpass` de 0,5 dB em vez de 3 dB | **Muito alto.** É o que hoje faz a BER depender de `SpS` | Bloqueante |
 | **C-22** | Banda elétrica do receptor derivada de `k · symbol_rate` em vez do literal 80 GHz | Alto. Remove o acoplamento acidental entre banda e sobreamostragem | Alta |
+| **C-25** | Implementar os impairments de transmissor da referência: desbalanço de fase IQ, skew I/Q, banda S21 do modulador, ER, e quantização do ADC | **Muito alto.** São o termo dominante da curva entre 8 e 15 dBm (piso de 19,12 dB) | Bloqueante |
 | **C-24** | Adicionar `MMAEqualizer` e `GramSchmidtOrthogonalizer` a `components/rx/` — ausentes no rascunho e presentes na cadeia de DSP da referência | Alto: é o que produz o penhasco de baixa potência dos dados do VPI | Alta |
 | **C-23** | Correlação de sincronismo por FFT, `QAM_mod`/`QAM_dem` vetorizados, recuperação de fase por broadcasting | Nenhum no resultado; 100× a 1000× em tempo | Alta |
 
@@ -1372,22 +1326,24 @@ Nenhuma destas foi assumida no documento. Cada uma muda código ou muda número.
 | **`[D-1]`** | ~~`QAM_mod` existe?~~ **Resolvida:** está no notebook original (célula 5), foi perdida na exportação para `draft.py`. Será reescrita vetorizada (C-16) | — |
 | **`[D-2]`** | SP é NLSE escalar de verdade (com γ) ou Manakov com pol. Y zerada (com 8/9·γ)? | São equações diferentes. Afeta toda comparação SP vs DP |
 | **`[D-3]`** | O fator 8/9 entra na reescrita, ou mantemos γ puro para bater com resultados já publicados pelo grupo? | Resultados novos não comparáveis com os antigos |
-| ~~**`[D-4]`**~~ | ~~Exigir `fs` múltiplo inteiro de todos os baud rates...~~ **Fechada: `fs` será múltiplo inteiro.** | — |
-| ~~**`[D-5]`**~~ | ~~Sinal elétrico real: armazenar como complexo...~~ **Fechada: real com parte imaginária nula.** | — |
-| ~~**`[D-6]`**~~ | ~~Margem de alargamento espectral no validador...~~ **Fechada: constante configurada.** | — |
-| ~~**`[D-7]`**~~ | ~~O RX continua recebendo `L` e `D` verdadeiros do enlace...~~ **Fechada: aceita diretamente `L` e `D`.** | — |
+| **`[D-4]`** | Exigir `fs` múltiplo inteiro de todos os baud rates, ou implementar reamostragem fracionária? | Inteiro simplifica muito o pulse shaping, mas restringe cenários WDM heterogêneos |
+| **`[D-5]`** | Sinal elétrico real: armazenar como complexo com parte imaginária nula, ou tipo separado? | Complexo gasta 2× memória; tipo separado dobra o número de caminhos de código |
+| **`[D-6]`** | Margem de alargamento espectral no validador de Nyquist: constante configurável ou estimada de `γ·P·L_eff`? | Constante pode ser otimista demais em regime não linear |
+| **`[D-7]`** | O RX continua recebendo `L` e `D` verdadeiros do enlace (oracle, como hoje), ou a arquitetura já prevê estimação cega de dispersão? | Muda a interface entre `Link` e `Receiver`. Difícil de mudar depois |
 | ~~**`[D-8]`**~~ | ~~PMD de 1ª ordem entra agora?~~ **Fechada: entra agora.** O `BirefringenceModel` da seção 10 é implementado completo, com DGD, já na Fase 3 | — |
-| ~~**`[D-9]`**~~ | ~~Nível de fidelidade dos dispositivos...~~ **Fechada: MZM tem ER implementado, o resto mantém o atual.** | — |
-| ~~**`[D-10]`**~~ | ~~Escala alvo... Precisa de Numba/CuPy?~~ **Fechada: sem suporte a GPU por enquanto.** | — |
+| **`[D-9]`** | Nível de fidelidade dos dispositivos: MZM com ER e resposta em frequência, laser com RIN, fotodiodo com corrente de escuro e TIA? Ou manter o nível atual e só arrumar a estrutura? | Define quantos parâmetros cada `ChannelConfig` carrega |
+| **`[D-10]`** | Escala alvo: quantos canais, quantos símbolos, quantas repetições Monte Carlo? Precisa de Numba/CuPy? | Se a resposta for "GPU depois", `kernels/` precisa ser escrito com backend trocável desde já |
 | ~~**`[D-11]`**~~ | ~~Pacote instalável ou script de laboratório?~~ **Fechada: pacote instalável.** A seção 11 se aplica integralmente | — |
 | ~~**`[D-12]`**~~ | ~~Só o grupo ou publicado?~~ **Fechada: será publicado.** Implica licença, versionamento semântico, API estável, `CITATION.cff` e DOI — ver 11.4 | — |
-| ~~**`[D-13]`**~~ | ~~A síntese da seção 4.2.1 para o tipo `Signal`...~~ **Fechada: Signal segue a primeira definição.** | — |
-| ~~**`[D-14]`**~~ | ~~Um canal SP pode coexistir com um canal DP no mesmo enlace?~~ **Fechada: sim.** | — |
-| ~~**`[D-15]`**~~ | ~~IMDD é sempre SP...~~ **Fechada: IMDD sempre é SP.** | — |
-| ~~**`[D-16]`**~~ | ~~Nome do pacote e do repositório para publicação~~ **Fechada: PyCOSim (simcopy).** | — |
-| ~~**`[D-17]`**~~ | ~~Coeficiente de PMD padrão~~ **Fechada: 0,05 ps/√km**, a partir do BIFROST e da especificação Corning — ver 14.13 | — |
-| ~~**`[D-18]`**~~ | ~~O que `correlation_length` representa...~~ **Fechada: primeira opção (escala convencional, ~100 m).** | — |
-| ~~**`[D-19]`**~~ | ~~O modelo de PMD por mecanismo...~~ **Fechada: usar estatística calibrada.** | — |
+| **`[D-13]`** | A síntese da seção 4.2.1 para o tipo `Signal` (geometria compartilhada + `domain` como metadado de pré-condição) é aceitável, ou preferem a classe única com `type`? | Decide a assinatura de todos os blocos |
+| **`[D-14]`** | Um canal SP pode coexistir com um canal DP no mesmo enlace? | Se sim, o campo agregado é sempre 2×N e o solver é vetorial sempre que houver ao menos um DP |
+| **`[D-15]`** | IMDD é sempre SP, ou existe caso de IMDD com multiplexação de polarização a considerar? | Determina se `pol` existe em `IMDDChannel` |
+| **`[D-16]`** | Nome do pacote e do repositório para publicação | Muda todos os imports; melhor decidir antes da Fase 1 |
+| ~~**`[D-17]`**~~ | ~~Coeficiente de PMD padrão~~ **Fechada: 0,1 ps/√km**, valor do arquivo VPI (ver 14.14). O valor de 0,05 vindo do BIFROST foi descartado por afastar da referência | — |
+| ~~**`[D-18]`**~~ | ~~O que `correlation_length` representa~~ **Fechada: 50 m**, o `CorrelationLength` do arquivo VPI | — |
+| **`[D-20]`** | `f0` (posição do canal na grade WDM) fica no nível comum ou dentro da união IMDD/DCS? O mux precisa da grade inteira; o LO_Offset é que é específico do coerente | Se `f0` for por variante, o multiplexador perde a visão da grade |
+| **`[D-21]`** | FWM: o VPI está com `FWM = No`, mas o nosso SSFM de campo agregado inclui FWM inerentemente. Aceitar a diferença e documentar, ou buscar equivalência? | Afeta a comparação do termo `C` |
+| **`[D-19]`** | O modelo de PMD por mecanismo (temperatura, curvatura, torção) entra como capacidade, ou basta a estatística calibrada offline pelo BIFROST? | O alvo VPI não exercita PMD, então essa capacidade não teria validação contra a referência atual |
 
 **Bloqueantes para a Fase 1:** `[D-13]` e `[D-16]`, porque definem assinaturas e imports.
 **Bloqueantes para a Fase 2:** `[D-2]`, `[D-3]` e `[D-4]`.
@@ -1668,6 +1624,114 @@ Isso rende três coisas concretas:
 **`[D-19]`: escopo.** O modelo por mecanismo (temperatura, raio de curvatura, torção) entra como capacidade do simulador, ou basta a estatística calibrada? A favor do primeiro: permitiria estudar deriva térmica e fibra aérea. Contra: nada no alvo de validação atual exercita isso — **o artigo do grupo e os dados do VPI não mencionam PMD nem DGD em momento algum**, então não há como validar um modelo de PMD contra a referência 400ZR. PMD precisa de rota de validação própria, e é justamente para isso que o BIFROST serve.
 
 Fica registrado que a arquitetura deve acomodar os dois: `BirefringenceModel` com modo `statistical` (padrão, passo grosso, rápido) e modo `hinge` (segmentos estáveis alternados com dobradiças), sendo o segundo o que permitiria, no futuro, ligar a um modelo por mecanismo sem reescrever o enlace.
+
+### 14.14 O arquivo de configuração do VPI: correções e confirmações
+
+Com `WDM_of_400G_ZR_4_Channels_Ch2` documentado parâmetro a parâmetro, várias coisas mudam. **O arquivo `.vtmu` passa a ser a fonte da verdade; os números do artigo divergem dele.**
+
+#### Correções ao que eu afirmei antes
+
+| Afirmação anterior | Correção |
+|---|---|
+| "Os dados do VPI não exercitam PMD" | **Errado.** `PMDCoefficient = 0.1e-12/31.62 s/√m` = **0,1 ps/√km**, `CorrelationLength = 50 m`, `PolarizationAnalysis = VectorPMD`. PMD está ligada |
+| `[D-17]` fechada em 0,05 ps/√km | **Reabre e fecha em 0,1 ps/√km**, o valor do arquivo. O padrão original do `draft_fixed.py` estava certo; a "correção" via BIFROST afastava do alvo |
+| `[D-18]` indefinida entre ~5 m e ~100 m | **Fechada em 50 m**, o valor do arquivo |
+| Parâmetros do artigo como referência | O `.vtmu` diverge do artigo em cinco pontos (ver abaixo). Usar o arquivo |
+
+**Divergências entre o artigo e o arquivo:**
+
+| Parâmetro | Artigo | Arquivo `.vtmu` |
+|---|---|---|
+| Figura de ruído do amplificador | 4 dB | **5 dB** |
+| Largura de linha do laser e do LO | 100 kHz | **500 kHz** |
+| Responsividade | 0,7 A/W | **1,0 A/W** |
+| Ruído térmico | 21 pA/√Hz | **10 pA/√Hz** |
+| Roll-off | 0,2 | **0,18** (RRC no TX; o DSP usa 0,2 raised cosine) |
+
+#### Confirmações diretas de decisões da arquitetura
+
+| Parâmetro do VPI | Confirma |
+|---|---|
+| `NonlinearAdjustmentFactors = (8./9.) 1.0 (2./3.) ...` | **`[D-3]`: o fator 8/9 de Manakov entra.** Com `NonLinearIndex = 2.6e-20` e `CoreArea = 80e-12`, γ = 1,3 W⁻¹km⁻¹, o mesmo do rascunho |
+| `SplitStepType = Symmetric`, `StepSelectionMethod = NonlinearPhaseChange`, `MaxPhaseChange = 0.5°`, `TargetLocalError = 2e-3` | **C-8**: split-step simétrico com passo adaptativo por mudança de fase não linear |
+| `Rx_DualPol: TransferFunction = Bessel`, `Bandwidth = 1.15*SymbolRate` | **C-21 e C-22 exatamente**: filtro de **fase linear** (Bessel), com banda derivada da taxa de símbolo (1,15·R_s), não um literal |
+| `GreatestPrimeFactorLimit = 2` | O validador `FFTSizeIsEfficient` da seção 7.1 |
+| `SamplesPerSymbol = 16` global, `SampleRateDefault = SymbolRate*SamplesPerSymbol`, `TimeWindow = NumberOfSymbols/SymbolRate` | A [seção 4.5.2](#452-grandezas-livres-e-grandezas-derivadas) inteira: uma `fs` só, janela global, `SpS` derivado |
+| `RandomNumberSeedX/Y` = {2,3}, {0,1}, {4,5}, {6,7} por canal | **C-1**: seed independente por canal e por polarização |
+| `fs` = 59,84 GBd × 16 = 957,44 GHz | **`[D-4]`**: `SpS` inteiro é suficiente para este cenário |
+| `MUX` e `FilterOpt`: gaussiana de ordem 3, BW 70 GHz | **C-11**: filtro óptico suave, não janela retangular |
+
+#### Achados novos
+
+**1. O piso `B` é penalidade de implementação do transmissor, não ASE.** O arquivo introduz impairments deliberados: `PhaseShiftX/Y = -90+5` (5° de desbalanço de fase IQ, com comentário explícito no arquivo) e `SkewX/Y = 0.75e-12` s. Simulando os dois com RRC de roll-off 0,18 a 59,84 GBd, eles sozinhos dão **23,4 dB** de SNR (só o desbalanço de 5° dá 27,2 dB). O ajuste dos dados dá piso de **19,12 dB**. Os ~21 dB restantes vêm das outras limitações do TX: `S21_Bandwidth = 40 GHz` de ordem 3 para um sinal de 59,84 GBd, o LPF do TX em `0.75*BaudRate/2`, a não linearidade do MZM com `Vpi = 5 V`, `ExtinctionRatio = 30 dB` e o ADC de 12 bits.
+
+Que **não** é ASE se verifica pela conta: o amplificador tem NF de 5 dB e entrada da ordem de −12 dBm por canal, o que dá OSNR de ~41 dB, ou SNR de ~34 dB. Longe dos 19 dB.
+
+Consequência prática: **os impairments do TX não são detalhe, são o termo dominante da curva entre 8 e 15 dBm.** Reproduzir a referência exige implementá-los. Entram como C-25.
+
+**2. O único amplificador é booster, antes da fibra.** O resumo da documentação diz que ele compensa a perda da fibra, o que sugeriria um pré-amplificador no receptor. Os dados desmentem: o ajuste mostra `A` escalando com `10^(0,02·L)`, ou seja, a potência recebida cai com a perda do span. Se houvesse pré-amplificador controlado por potência, a potência no receptor seria constante e `A` não dependeria de `L`. `AmplifierType = PowerControlled` com `OutputPower = 10^((PowerdBm-30)/10)` define a potência de lançamento, e é ela que a varredura percorre.
+
+**3. `FWM = No`.** O VPI está com mistura de quatro ondas desligada, e usa `SPM_EC`, `XPM_EC`, `XPM_MC` com `SpectralDiscretizerDescription = FixedFrequencies`, ou seja, um modelo por banda com efeitos selecionáveis. **O nosso SSFM propaga o campo agregado, e nele FWM é inerente e não pode ser desligado.** É uma diferença de modelagem real, não um bug, e precisa estar documentada antes de comparar o termo `C`.
+
+**4. `GrayMapping = No`.** A conversão BER → SNR que usei assume 16QAM com código Gray. Sem Gray, a relação muda: a *forma* da curva e a potência ótima não se alteram, mas os valores absolutos de SNR extraídos ficam deslocados. Os alvos `A`, `B`, `C` continuam válidos como alvos de ajuste; a interpretação física deles em dB precisa dessa ressalva.
+
+**5. `PRBS_Order = 7`.** A sequência tem período de 127 bits e a janela tem 2¹⁸ símbolos × 4 bits, ou seja, a sequência se repete cerca de 8.258 vezes. Vale verificar se é isso mesmo, porque uma sequência curta repetida cria correlações artificiais entre canais e entre símbolos vizinhos, o que afeta justamente XPM e a contagem de erros.
+
+### 14.15 Ajuste conjunto com sete distâncias
+
+Com os datasets de 80, 90, 100, 110 e 120 km somados aos de 125 e 140 km, o modelo de três termos foi reajustado. **Primeiro o teste das previsões feitas apenas com 125 e 140 km:**
+
+| L (km) | P ótimo previsto | P ótimo medido | BER mín prevista | BER mín medida |
+|---|---|---|---|---|
+| 80 | 10,58 dBm | 11 dBm | 1,00e-4 | 4,74e-5 |
+| 90 | 11,22 | 11 | 1,37e-4 | 7,77e-5 |
+| 100 | 11,87 | 12 | 2,00e-4 | 1,36e-4 |
+| 110 | 12,53 | 13 | 3,14e-4 | 2,51e-4 |
+| 120 | 13,19 | 13 | 5,31e-4 | 4,84e-4 |
+
+A potência ótima acertou em todas dentro de um passo da grade de 1 dB. A BER mínima ficou entre 1,1× e 2,1× acima do medido, com o erro maior nas distâncias curtas, o que indica que o modelo ajustado só com distâncias longas subestimava ligeiramente o desempenho.
+
+**Ajuste conjunto com as sete distâncias:**
+
+```
+A(125 km) = 0,1186     B = 0,01224 (piso 19,12 dB)     C(125 km) = 5,671e-6
+resíduo: RMS 0,083 dB, máximo 0,208 dB, sobre 85 pontos e 7 distâncias
+```
+
+Três parâmetros descrevendo 85 medidas de BER em sete distâncias com desvio máximo de 0,2 dB em SNR. O modelo está validado e **estes são os alvos de aceitação definitivos.**
+
+A janela útil por distância, pelo critério de convergência do DSP:
+
+| L (km) | 80 | 90 | 100 | 110 | 120 | 125 | 140 |
+|---|---|---|---|---|---|---|---|
+| Janela (dBm) | 0–17 | 0–16 | 2–16 | 4–16 | 8–15 | 8–16 | 12–16 |
+| Nº de pontos | 18 | 17 | 15 | 13 | 8 | 9 | 5 |
+
+O limiar inferior sobe monotonicamente com a distância, como esperado de um DSP com limiar de SNR fixo para convergir.
+
+
+### 14.16 Orçamento de ruído: por que a BER do rascunho ia a zero
+
+O diagnóstico agora é quantitativo. Com os parâmetros do `.vtmu` (R = 1,0 A/W, LO de 1 mW, ruído térmico de 10 pA/√Hz, hibridas dividindo o LO em quatro), o ruído do front-end coerente é:
+
+| Fonte | Densidade |
+|---|---|
+| Shot do LO | 8,95 pA/√Hz |
+| Térmico | 10,0 pA/√Hz |
+| Potência de ruído equivalente na banda R_s | 4,31e-11 A² |
+
+Comparando o `A` que esse orçamento prevê com o `A` ajustado nos dados (0,1186 a 125 km), e fazendo o mesmo com o `C` contra uma estimativa GN de um span:
+
+| Hipótese sobre `PowerdBm` | `A` previsto | Razão com o ajuste | `C` implícito | Razão com GN |
+|---|---|---|---|---|
+| Potência **por canal** | 0,0136 | 8,70 (**+9,4 dB**) | 5,7 W⁻² | **49,6×** |
+| Potência **total dos 4 canais** | 0,0545 | 2,18 (+3,4 dB) | 90,7 W⁻² | 3,1× |
+
+**Duas verificações independentes, ruído e não linearidade, apontam para a mesma conclusão: `PowerdBm` é a potência total dos quatro canais, não por canal.** A potência por canal é 6 dB menor. Isso precisa ser confirmado no esquemático, porque muda a interpretação de toda a varredura.
+
+Os 3,4 dB que sobram em `A` são compatíveis com perdas não contabilizadas: filtro óptico, excesso das híbridas, o LPF em 1,15·R_s passando mais ruído que um filtro casado, quantização de 12 bits, e o viés da conversão BER → SNR por assumir código Gray quando `GrayMapping = No`.
+
+**Por que o `draft_fixed.py` dava BER zero:** ele não tem nenhum dos três termos calibrados. Faltava o piso de implementação do TX (`B`, que domina entre 8 e 15 dBm e vale 19,12 dB), o cenário estava a 14 GBd em vez de 59,84 GBd, a potência de lançamento era de 2 mW em vez de dezenas de mW, e o ruído do receptor vinha de `4kT/50 Ω` (18,2 pA/√Hz) com R = 0,9 em vez dos 10 pA/√Hz com R = 1,0 do arquivo. Não era ruído "baixo demais" por acaso: era um sistema diferente.
 
 ---
 
@@ -1985,6 +2049,8 @@ A conta importante não é o total, é que **14 parâmetros hoje livres passam a
 | Versão | Data | Alterações |
 |---|---|---|
 | 0.1 | — | Versão inicial: diagnóstico do código atual, modelo de domínio, decisão componente/processo, diagramas revisados, catálogo de 20 correções, plano de migração em 7 fases, 12 decisões em aberto |
+| 0.9 | — | Diagrama 4.3.1 reestruturado: `TransmitterConfig` e `ReceiverConfig` passam a ficar abaixo da decisão IMDD/DCS; `f0` fica no nível comum e `lo_frequency_offset` dentro do coerente (`[D-20]` fechada). Nova seção 14.16 com o orçamento de ruído do front-end e a evidência dupla de que `PowerdBm` é potência total |
+| 0.8 | — | Arquivo `.vtmu` documentado passa a ser a fonte da verdade. Correções: PMD **está** ligada no VPI (0,1 ps/√km, L_corr 50 m), `[D-17]` e `[D-18]` refechadas, cinco divergências entre artigo e arquivo. Confirmações diretas de `[D-3]`, `[D-4]`, C-8, C-11, C-21, C-22, C-1 e da seção 4.5.2. Achados: o piso `B` é penalidade de implementação do TX (impairments deliberados), o amplificador é booster, `FWM = No`, `GrayMapping = No`, `PRBS_Order = 7`. Ajuste conjunto com 7 distâncias: resíduo RMS 0,083 dB sobre 85 pontos. Nova correção C-25, novas decisões `[D-20]` e `[D-21]` |
 | 0.7 | — | Nova seção 14.13 sobre o BIFROST: confirmação de que a `random_su2` proposta é equivalente ao método de quatérnios do artigo publicado, restrição de licença GPL-3.0, discrepância do modelo de dispersão cromática, e uso recomendado como calibração offline. `[D-17]` fechada em 0,05 ps/√km. Novas decisões `[D-18]` e `[D-19]`. Novo nível de validação V6 para estatística de PMD |
 | 0.6 | — | Modelo de três termos verificado contra o dataset de 140 km, que não foi usado no ajuste: erro de 0,02 a 0,06 dB em SNR na janela convergida. Ajuste conjunto das duas distâncias fecha com resíduo RMS de 0,018 dB, tornando `A`, `B` e `C` deriváveis dos dados. Novas seções 14.9 a 14.12: janela de validação móvel, regra de 400ZR como fixture, e comparação do rascunho com a configuração do artigo. Nova correção C-24 (MMA e Gram-Schmidt) |
 | 0.5 | — | Novas seções 14.6 a 14.8: cenário de referência extraído do artigo do grupo, análise do dataset de 125 km (decomposição em ruído de RX, piso constante e não linearidade, com resíduo de 0,02 dB), critérios de aceitação como três números em vez de uma curva, e adaptação do plano de validação ao que o VPI exporta nativamente |
